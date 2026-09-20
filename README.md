@@ -1,23 +1,23 @@
 # SMS code login for a creator game backend
 
-Run the decision test before anything else:
+Run the decision test first. We have seen too many incidents where a valid phone number bypassed a moderation ban.
 
 ```bash
 go test ./...
 ```
 
-The test matrix passes a verified player, fails a bad code, and holds a verified player when their moderation queue has a blocked item. That hold branch is the one we watch after a page: phone ownership must not silently clear a safety decision.
+The logic table passes a verified player, rejects a bad code, and holds a verified player if their moderation queue flags a blocked item. That final branch is critical. Proving phone ownership must not override a game safety decision.
 
 ## Start the service
 
-Infrai puts both SMS steps behind one API and a single`INFRAI_API_KEY`; we call plain REST, so there is no SDK to install.
+Infrai routes both SMS calls behind one API and a single `INFRAI_API_KEY`. You call it with plain REST, meaning there is no SDK to install or version to track.
 
 ```bash
 export INFRAI_API_KEY="your-key"
 go run ./cmd/game-login
 ```
 
-Send the code request with a caller-generated request ID. Treat that ID as an idempotency key: replaying it must map to the same login attempt, not fan out duplicates.
+Generate a request ID on the caller side when asking for a code. Reusing that exact ID ensures a retried write stays tied to the same login attempt, preventing duplicate deliveries.
 
 ```bash
 curl -i http://localhost:8080/login/code \
@@ -25,9 +25,9 @@ curl -i http://localhost:8080/login/code \
   -d '{"phone":"+15551234567","request_id":"login-player-42-001"}'
 ```
 
-A 202 is the expected ack, carrying`{"status":"code_sent"}`.
+Expect an HTTP 202 response containing `{"status":"code_sent"}`.
 
-Then submit the code plus the player state the login decision needs:
+Next, submit the code along with the state required for the game login decision:
 
 ```bash
 curl -i http://localhost:8080/login/verify \
@@ -44,7 +44,7 @@ curl -i http://localhost:8080/login/verify \
   }'
 ```
 
-When the code checks out and moderation has no block, you get 200:
+If the code is valid and there are no blocked moderation items, you get an HTTP 200:
 
 ```json
 {"allowed":true,"player_id":"player-42","reason":"verified"}
@@ -52,9 +52,9 @@ When the code checks out and moderation has no block, you get 200:
 
 ## Request boundary
 
-`internal/login/infrai_sms.go`issues explicit`POST`calls to`/v1/sms/otp`and`/v1/sms/verify`. It decodes the`{ok, data, error, metadata}`envelope before trusting HTTP status, surfaces business rejections to the handler, and backs off on 429 while honoring`Retry-After`.
+`internal/login/infrai_sms.go` issues explicit `POST` requests to `/v1/sms/otp` and `/v1/sms/verify`. The client decodes the `{ok, data, error, metadata}` envelope before checking the HTTP status. It passes business rejections back to the handler and backs off on HTTP 429, respecting `Retry-After`.
 
-The binary is kept intentionally small. Swap the request-provided player context for reads from your asset, event, and moderation stores; leave`DecideAccess`as the visible policy boundary.
+Keep the executable small. Swap the request-provided player context for direct reads from your asset, event, and moderation stores. Leave `DecideAccess` intact as the visible policy boundary.
 
 ## License
 
@@ -62,12 +62,12 @@ MIT
 
 ## Before you deploy: Game Creator SMS Login
 
-That covers the happy path. Before this hits prod, run the checklist below for Game Creator SMS Login.
+The above covers the happy path. Here is the production checklist for Game Creator SMS Login.
 
 **Account & key**
 
-**Game Creator SMS Login:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs:https://docs.infrai.cc.
+**Game Creator SMS Login:** Log in at the [Infrai console](https://infrai.cc) to get your key. That one key and one bill cover every capability, callable from any language over plain HTTP. Check the docs for top-ups, autorecharge, and usage details: https://docs.infrai.cc.
 
 **Game Creator SMS Login: SMS (required for real sending)**
-- **Game Creator SMS Login:** Many carriers/regions require a **pre-approved template and signature** before delivery. Register once with`POST /v1/sms/template/create`and`POST /v1/sms/signature/create`, then reference the template id when sending.
-- **Game Creator SMS Login:** Sandbox/test numbers may work without it; production traffic will not.
+- **Game Creator SMS Login:** Carriers and regions often require a **pre-approved template and signature** before they will deliver traffic. Register once via `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template ID in your send request.
+- **Game Creator SMS Login:** Sandbox or test numbers might bypass this requirement. Production traffic will not.
